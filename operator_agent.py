@@ -40,13 +40,99 @@ class OperatorAgent:
         
         # Load the metadata file
         metadata_path = screenshot_path.replace('.png', '.json')
+        metadata = {}
         page_info = {}
+        dom_data = {}
+        
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r') as f:
-                page_info = json.load(f)
+                metadata = json.load(f)
+                page_info = metadata.get('page_info', {})
+                dom_data = metadata.get('dom_data', {})
+        
+        # Format interactive elements for better readability
+        interactive_elements_text = ""
+        interactive_elements = dom_data.get('interactiveElements', [])
+        if interactive_elements:
+            interactive_elements_text = "\nInteractive Elements:\n"
+            
+            for i, element in enumerate(interactive_elements[:20]):  # Limit to 20 elements
+                pos = element.get('position', {})
+                text = element.get('text', '')
+                tag = element.get('tagName', '')
+                element_type = element.get('type', '')
+                element_id = element.get('id', '')
+                element_class = element.get('className', '')
+                
+                # Create a concise but informative description
+                element_desc = f"{i+1}. {tag}"
+                if element_type:
+                    element_desc += f" type=\"{element_type}\""
+                if element_id:
+                    element_desc += f" id=\"{element_id}\""
+                if text:
+                    # Truncate long text
+                    text_preview = text[:30] + "..." if len(text) > 30 else text
+                    element_desc += f" text=\"{text_preview}\""
+                
+                element_desc += f" at position ({int(pos.get('x', 0))}, {int(pos.get('y', 0))}), "
+                element_desc += f"size {int(pos.get('width', 0))}x{int(pos.get('height', 0))}"
+                
+                interactive_elements_text += element_desc + "\n"
+            
+            if len(interactive_elements) > 20:
+                interactive_elements_text += f"... and {len(interactive_elements) - 20} more elements\n"
+        
+        # Format forms for better readability
+        forms_text = ""
+        forms = dom_data.get('forms', [])
+        if forms:
+            forms_text = "\nForms:\n"
+            
+            for i, form in enumerate(forms):
+                form_id = form.get('id', '')
+                form_name = form.get('name', '')
+                form_elements = form.get('elements', [])
+                
+                form_desc = f"{i+1}. Form"
+                if form_id:
+                    form_desc += f" id=\"{form_id}\""
+                if form_name:
+                    form_desc += f" name=\"{form_name}\""
+                
+                form_desc += f" with {len(form_elements)} elements:\n"
+                
+                for j, element in enumerate(form_elements[:5]):  # Limit to 5 elements per form
+                    el_tag = element.get('tagName', '')
+                    el_type = element.get('type', '')
+                    el_name = element.get('name', '')
+                    el_text = element.get('text', '')
+                    el_pos = element.get('position', {})
+                    
+                    element_desc = f"   {j+1}. {el_tag}"
+                    if el_type:
+                        element_desc += f" type=\"{el_type}\""
+                    if el_name:
+                        element_desc += f" name=\"{el_name}\""
+                    if el_text:
+                        text_preview = el_text[:20] + "..." if len(el_text) > 20 else el_text
+                        element_desc += f" text=\"{text_preview}\""
+                    
+                    element_desc += f" at ({int(el_pos.get('x', 0))}, {int(el_pos.get('y', 0))})"
+                    
+                    form_desc += element_desc + "\n"
+                
+                if len(form_elements) > 5:
+                    form_desc += f"   ... and {len(form_elements) - 5} more elements\n"
+                
+                forms_text += form_desc + "\n"
+        
+        # Get page title and URL
+        page_title = dom_data.get('title', 'Unknown')
+        page_url = dom_data.get('url', 'Unknown')
         
         messages = [
-            {"role": "system", "content": """You are a browser automation agent. You are given a screenshot of a webpage and a goal. 
+            {"role": "system", "content": """You are a browser automation agent. You are given a screenshot of a webpage and DOM information. 
              Your task is to identify what action to take next to accomplish the goal.
              
              IMPORTANT WEB INTERACTION PATTERNS:
@@ -67,6 +153,21 @@ class OperatorAgent:
                 - If you reach the bottom and haven't found what you need, scroll back up
                 - Always check the page header and footer as they often contain important navigation
              5. After scrolling, take time to fully analyze the new content that has appeared
+             
+             LEARNING FROM PAST ACTIONS:
+             1. Carefully analyze the action history to avoid repeating unsuccessful strategies
+             2. If you've tried clicking in one area without success, try a different area
+             3. If you've scrolled down and not found what you need, try scrolling up or to a different section
+             4. Use the history to understand the current context of where you are in the workflow
+             5. Build upon successful actions to make continuous progress toward the goal
+             
+             USING DOM INFORMATION:
+             1. Prefer using DOM element coordinates when available rather than guessing positions
+             2. DOM elements include important details like element type, text, and exact position
+             3. Look for elements that match what you need (buttons, inputs, links, etc)
+             4. Pay attention to form structures when filling out forms
+             5. The coordinates provided in the DOM are center points of elements - click there
+             6. When interacting with forms, use the form structure to guide your actions
              
              For each action, you must provide detailed information about the target element:
              - Element type (button, link, input field, etc.)
@@ -139,21 +240,65 @@ class OperatorAgent:
                 {"type": "text", "text": f"""Goal: {goal}
 
 Page Information:
+Title: {page_title}
+URL: {page_url}
 Viewport Size: {page_info.get('viewport', {}).get('width', 'unknown')}x{page_info.get('viewport', {}).get('height', 'unknown')}
 Window Size: {page_info.get('window', {}).get('width', 'unknown')}x{page_info.get('window', {}).get('height', 'unknown')}
 Scroll Position: ({page_info.get('window', {}).get('scrollX', 'unknown')}, {page_info.get('window', {}).get('scrollY', 'unknown')})
 Device Pixel Ratio: {page_info.get('window', {}).get('devicePixelRatio', 'unknown')}
+{interactive_elements_text}
+{forms_text}
 
 Analyze this screenshot and recommend the next action to take."""},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
             ]}
         ]
         
-        # Add last action to context if available
+        # Add action history to context
+        action_history_text = ""
+        if self.action_history:
+            # Format the recent action history (last 5 actions)
+            history_to_show = min(5, len(self.action_history))
+            action_history_text = "\n\nAction History (most recent first):\n"
+            
+            for i in range(history_to_show):
+                idx = len(self.action_history) - 1 - i
+                if idx >= 0:
+                    action_data = self.action_history[idx]
+                    action = action_data.get("action", "unknown")
+                    params = action_data.get("params", {})
+                    reasoning = action_data.get("reasoning", "No reasoning provided")
+                    
+                    # Create a concise summary
+                    if action == "click" or action == "double_click":
+                        x = params.get("x", "unknown")
+                        y = params.get("y", "unknown")
+                        action_summary = f"{action} at ({x}, {y})"
+                    elif action == "type":
+                        text = params.get("text", "unknown")
+                        action_summary = f"{action}: \"{text}\""
+                    elif action == "scroll":
+                        scroll_x = params.get("scroll_x", 0)
+                        scroll_y = params.get("scroll_y", 0)
+                        action_summary = f"{action} by ({scroll_x}, {scroll_y})"
+                    elif action == "browse_to":
+                        url = params.get("url", "unknown")
+                        action_summary = f"{action}: {url}"
+                    else:
+                        action_summary = f"{action}: {params}"
+                    
+                    # Add the history entry
+                    action_history_text += f"{i+1}. {action_summary} - {reasoning[:100]}{'...' if len(reasoning) > 100 else ''}\n"
+        
+        # Add last action detail and history to context
         if last_action:
             messages[1]["content"][0]["text"] += f"\n\nLast action: {json.dumps(last_action)}"
         else:
             messages[1]["content"][0]["text"] += "\n\nThis is the first action to take. If you need to navigate to a website, use the browse_to action."
+        
+        # Add the action history if we have it
+        if action_history_text:
+            messages[1]["content"][0]["text"] += action_history_text
         
         response = self.client.chat.completions.create(
             model="gpt-4o",

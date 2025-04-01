@@ -125,6 +125,109 @@ class RemotePlaywright:
             # Still try to take a screenshot to see current state
             return self.take_screenshot()
     
+    def _extract_dom_information(self):
+        """Extract important DOM elements and their properties"""
+        try:
+            # Extract interactive elements and their properties
+            dom_data = self.page.evaluate("""() => {
+                function getElementInfo(element, depth = 0, maxDepth = 2) {
+                    if (!element || depth > maxDepth) return null;
+                    
+                    // Get element position
+                    const rect = element.getBoundingClientRect();
+                    
+                    // Basic element info
+                    const info = {
+                        tagName: element.tagName?.toLowerCase(),
+                        id: element.id,
+                        className: element.className,
+                        type: element.type,
+                        name: element.name,
+                        value: element.value,
+                        placeholder: element.placeholder,
+                        href: element.href,
+                        src: element.src,
+                        alt: element.alt,
+                        title: element.title,
+                        ariaLabel: element.getAttribute('aria-label'),
+                        text: element.innerText?.trim(),
+                        isVisible: (
+                            rect.width > 0 && 
+                            rect.height > 0 && 
+                            window.getComputedStyle(element).display !== 'none' && 
+                            window.getComputedStyle(element).visibility !== 'hidden'
+                        ),
+                        position: {
+                            x: rect.left + rect.width / 2,
+                            y: rect.top + rect.height / 2,
+                            width: rect.width,
+                            height: rect.height,
+                            top: rect.top,
+                            left: rect.left,
+                            bottom: rect.bottom,
+                            right: rect.right
+                        }
+                    };
+                    
+                    return info;
+                }
+                
+                // Get interactive elements
+                const interactiveElements = [];
+                const selectors = [
+                    'a', 'button', 'input', 'textarea', 'select', 'option',
+                    '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]',
+                    '[role="tab"]', '[role="menuitem"]', '[role="combobox"]', '[role="textbox"]',
+                    '[tabindex]:not([tabindex="-1"])', '[onclick]', '[onkeydown]', '[onkeyup]',
+                    'label', 'form', 'nav', 'header', 'footer'
+                ];
+                
+                document.querySelectorAll(selectors.join(', ')).forEach(element => {
+                    const info = getElementInfo(element);
+                    if (info && info.isVisible) {
+                        interactiveElements.push(info);
+                    }
+                });
+                
+                // Get form elements specifically
+                const forms = [];
+                document.querySelectorAll('form').forEach(form => {
+                    const formElements = [];
+                    form.querySelectorAll('input, button, textarea, select').forEach(el => {
+                        const info = getElementInfo(el);
+                        if (info) formElements.push(info);
+                    });
+                    
+                    forms.push({
+                        id: form.id,
+                        name: form.name,
+                        action: form.action,
+                        method: form.method,
+                        elements: formElements
+                    });
+                });
+                
+                // Get current page title, URL and visible text
+                return {
+                    title: document.title,
+                    url: window.location.href,
+                    interactiveElements: interactiveElements,
+                    forms: forms,
+                    visibleText: document.body.innerText.substring(0, 5000) // Limit text size
+                };
+            }""")
+            
+            return dom_data
+        except Exception as e:
+            print(f"Warning: Failed to extract DOM information: {e}")
+            return {
+                "title": "Unknown",
+                "url": "Unknown",
+                "interactiveElements": [],
+                "forms": [],
+                "visibleText": ""
+            }
+    
     def take_screenshot(self):
         """Take a screenshot and return the path"""
         try:
@@ -140,9 +243,19 @@ class RemotePlaywright:
             self.page.screenshot(path=screenshot_path)
             print("Screenshot taken successfully")
             
+            # Extract DOM information
+            dom_data = self._extract_dom_information()
+            
             # Create a metadata file with the same name
             metadata_path = f"{self.screenshot_dir}/screenshot_{timestamp}.json"
-            metadata = self._get_page_info()
+            page_info = self._get_page_info()
+            
+            # Combine page info with DOM data
+            metadata = {
+                "page_info": page_info,
+                "dom_data": dom_data,
+                "timestamp": timestamp
+            }
             
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=2)
